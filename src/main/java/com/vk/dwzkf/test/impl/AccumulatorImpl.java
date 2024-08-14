@@ -23,14 +23,11 @@ public class AccumulatorImpl implements Accumulator {
     public void accept(StateObject stateObject) {
         Long processId = stateObject.getProcessId();
 
-        if (isFinalStateReached(processId, stateObject)) {
-            if (counter > 0) {
-                processMap.remove(processId);
-            }
+        if (shouldRemoveProcess(stateObject, processId)) {
+            processMap.remove(processId);
         }
 
         addStateObject(processId, stateObject);
-
         updateFinalState(processId, stateObject);
         totalAccepted++;
     }
@@ -47,17 +44,8 @@ public class AccumulatorImpl implements Accumulator {
             return List.of();
         }
 
-        if (!hasValidTransitions(stateObjects) && stateObjects.size() > 1 ) {
-            List<State> states = stateObjects.stream()
-                    .map(StateObject::getState)
-                    .filter(state -> state == FINAL1 || state == FINAL2)
-                    .toList();
-            if (states.contains(FINAL1) || states.contains(FINAL2)) {
-                return stateObjects.stream()
-                        .filter(so -> so.getState() == FINAL1 || so.getState() == FINAL2)
-                        .toList();
-            }
-            return List.of();
+        if (shouldReturnFinalStatesOnly(stateObjects)) {
+            return filterFinalStates(stateObjects);
         }
 
         List<StateObject> uniqueStateObjects = removeDuplicateSeqNo(stateObjects);
@@ -67,6 +55,32 @@ public class AccumulatorImpl implements Accumulator {
         return buildValidStateSequence(uniqueStateObjects);
     }
 
+    /**
+     * Проверяет, нужно ли удалить процесс на основе достигнутого состояния.
+     */
+    private boolean shouldRemoveProcess(StateObject stateObject, Long processId) {
+        return isFinalStateReached(processId, stateObject) && counter > 0;
+    }
+
+    /**
+     * Добавляет объект состояния в карту процессов.
+     */
+    private void addStateObject(Long processId, StateObject stateObject) {
+        processMap.computeIfAbsent(processId, k -> new ArrayList<>()).add(stateObject);
+    }
+
+    /**
+     * Обновляет финальное состояние процесса.
+     */
+    private void updateFinalState(Long processId, StateObject stateObject) {
+        if (stateObject.getState() == FINAL1 || stateObject.getState() == FINAL2) {
+            finalStatesMap.put(processId, stateObject.getState());
+        }
+    }
+
+    /**
+     * Проверяет, достигло ли состояние процесса финального состояния.
+     */
     private boolean isFinalStateReached(Long processId, StateObject stateObject) {
         State existingFinalState = finalStatesMap.get(processId);
         if (existingFinalState != null) {
@@ -81,20 +95,39 @@ public class AccumulatorImpl implements Accumulator {
         return false;
     }
 
-    private void addStateObject(Long processId, StateObject stateObject) {
-        processMap.computeIfAbsent(processId, k -> new ArrayList<>()).add(stateObject);
+    /**
+     * Проверяет, следует ли вернуть только финальные состояния.
+     */
+    private boolean shouldReturnFinalStatesOnly(List<StateObject> stateObjects) {
+        return !hasValidTransitions(stateObjects) && stateObjects.size() > 1;
     }
 
-    private void updateFinalState(Long processId, StateObject stateObject) {
-        if (stateObject.getState() == FINAL1 || stateObject.getState() == FINAL2) {
-            finalStatesMap.put(processId, stateObject.getState());
+    /**
+     * Фильтрует и возвращает только финальные состояния.
+     */
+    private static List<StateObject> filterFinalStates(List<StateObject> stateObjects) {
+        List<State> states = stateObjects.stream()
+                .map(StateObject::getState)
+                .filter(state -> state == FINAL1 || state == FINAL2)
+                .toList();
+        if (states.contains(FINAL1) || states.contains(FINAL2)) {
+            return stateObjects.stream()
+                    .filter(so -> so.getState() == FINAL1 || so.getState() == FINAL2)
+                    .toList();
         }
+        return List.of();
     }
 
+    /**
+     * Извлекает список состояний для заданного идентификатора процесса.
+     */
     private List<StateObject> getStateObjectsForProcess(Long processId) {
         return processMap.getOrDefault(processId, new ArrayList<>());
     }
 
+    /**
+     * Удаляет дубликаты состояний на основе номера последовательности (seqNo).
+     */
     private List<StateObject> removeDuplicateSeqNo(List<StateObject> stateObjects) {
         Map<Integer, StateObject> seqNoMap = new LinkedHashMap<>();
         for (StateObject so : stateObjects) {
@@ -103,6 +136,9 @@ public class AccumulatorImpl implements Accumulator {
         return new ArrayList<>(seqNoMap.values());
     }
 
+    /**
+     * Сортирует состояния по приоритету и номеру последовательности.
+     */
     private void sortStateObjects(List<StateObject> stateObjects) {
         stateObjects.sort((o1, o2) -> {
             int priorityCompare = compareStatePriority(o1.getState(), o2.getState());
@@ -115,6 +151,9 @@ public class AccumulatorImpl implements Accumulator {
         reorderMidStates(stateObjects);
     }
 
+    /**
+     * Переставляет состояния MID1 и MID2, если они идут в неверном порядке.
+     */
     private void reorderMidStates(List<StateObject> stateObjects) {
         for (int i = 1; i < stateObjects.size() - 1; i++) {
             StateObject prev = stateObjects.get(i - 1);
@@ -129,6 +168,9 @@ public class AccumulatorImpl implements Accumulator {
         }
     }
 
+    /**
+     * Строит и возвращает последовательность состояний, начиная с последнего состояния.
+     */
     private List<StateObject> buildValidStateSequence(List<StateObject> stateObjects) {
         List<StateObject> result = new ArrayList<>();
         State lastState = null;
@@ -159,14 +201,23 @@ public class AccumulatorImpl implements Accumulator {
         return recentStateObjects;
     }
 
+    /**
+     * Проверяет, является ли состояние начальным (START1 или START2).
+     */
     private boolean isStartState(State state) {
         return state == START1 || state == START2;
     }
 
+    /**
+     * Проверяет, является ли состояние финальным (FINAL1 или FINAL2).
+     */
     private boolean isFinalState(State state) {
         return state == FINAL1 || state == FINAL2;
     }
 
+    /**
+     * Заменяет состояние FINAL2 на FINAL1 в списке состояний процесса.
+     */
     private void replaceFinal2WithFinal1(Long processId, StateObject final1StateObject) {
         List<StateObject> stateObjects = processMap.get(processId);
         if (stateObjects != null) {
@@ -179,6 +230,9 @@ public class AccumulatorImpl implements Accumulator {
         }
     }
 
+    /**
+     * Сравнивает приоритеты состояний.
+     */
     private int compareStatePriority(State state1, State state2) {
         if ((state1 == MID1 && state2 == MID2) || (state1 == MID2 && state2 == MID1)) {
             return 0;
@@ -187,6 +241,9 @@ public class AccumulatorImpl implements Accumulator {
         return Integer.compare(priorityList.indexOf(state1), priorityList.indexOf(state2));
     }
 
+    /**
+     * Проверяет, есть ли допустимые переходы между состояниями.
+     */
     private boolean hasValidTransitions(List<StateObject> stateObjects) {
         Set<State> presentStates = new HashSet<>();
         for (StateObject stateObject : stateObjects) {
@@ -208,6 +265,9 @@ public class AccumulatorImpl implements Accumulator {
         return false;
     }
 
+    /**
+     * Возвращает список допустимых следующих состояний.
+     */
     private List<State> getValidNextStates(State state) {
         Map<State, List<State>> validTransitions = new HashMap<>();
         validTransitions.put(START1, Arrays.asList(MID1, FINAL1));
@@ -220,6 +280,9 @@ public class AccumulatorImpl implements Accumulator {
         return validTransitions.getOrDefault(state, Collections.emptyList());
     }
 
+    /**
+     * Проверяет, является ли переход между состояниями допустимым.
+     */
     private boolean isValidTransition(State from, State to) {
         Map<State, List<State>> validTransitions = new HashMap<>();
         validTransitions.put(START1, Arrays.asList(MID1, FINAL1, FINAL2));
